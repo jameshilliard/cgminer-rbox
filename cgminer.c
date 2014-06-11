@@ -36,6 +36,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
+#include <sha2.h>
 #ifndef WIN32
 #include <sys/resource.h>
 #else
@@ -49,7 +50,6 @@
 char *curly = ":D";
 #endif
 #include <libgen.h>
-#include <sha2.h>
 
 #include "compat.h"
 #include "miner.h"
@@ -204,7 +204,8 @@ static bool no_work;
 #ifdef USE_ICARUS
 char *opt_icarus_options = NULL;
 char *opt_icarus_timing = NULL;
-float opt_anu_freq = 200;
+float opt_anu_freq = 270;
+float opt_rock_freq = 270;
 #endif
 bool opt_worktime;
 #ifdef USE_AVALON
@@ -1048,8 +1049,11 @@ static char *set_null(const char __maybe_unused *arg)
 static struct opt_table opt_config_table[] = {
 #ifdef USE_ICARUS
 	OPT_WITH_ARG("--anu-freq",
-		     set_float_125_to_500, &opt_show_intval, &opt_anu_freq,
+		     set_float_125_to_500, &opt_show_intval, &opt_rock_freq,
 		     "Set AntminerU1 frequency in MHz, range 125-500"),
+	OPT_WITH_ARG("--rock-freq",
+		     set_float_125_to_500, &opt_show_intval, &opt_rock_freq,
+		     "Set RockMiner frequency in MHz, range 125-500"),
 #endif
 	OPT_WITH_ARG("--api-allow",
 		     opt_set_charp, NULL, &opt_api_allow,
@@ -2546,9 +2550,9 @@ static void curses_print_status(void)
 		cg_mvwprintw(statuswin, 3, 0, " ST: %d  SS: %"PRId64"  NB: %d  LW: %d  GF: %d  RF: %d",
 			     total_staged(), total_stale, new_blocks, local_work, total_go, total_ro);
 	} else {
-		cg_mvwprintw(statuswin, 3, 0, " A:%.0f  R:%.0f  HW:%d  WU:%.1f/m",
+		cg_mvwprintw(statuswin, 3, 0, " A:%.0f  R:%.0f  HW:%d  WU:%.1f/m  Freq:%.0fMHz ",
 			     total_diff_accepted, total_diff_rejected, hw_errors,
-			     total_diff1 / total_secs * 60);
+			     total_diff1 / total_secs * 60,opt_rock_freq);
 	}
 	wclrtoeol(statuswin);
 	if (shared_strategy() && total_pools > 1) {
@@ -2587,11 +2591,11 @@ static void adj_fwidth(float var, int *length)
 }
 
 #define STATBEFORELEN 23
-const char blanks[] = "                                        ";
+const char blanks[] = "                 ";
 
 static void curses_print_devstatus(struct cgpu_info *cgpu, int devno, int count)
 {
-	static int devno_width = 1, dawidth = 1, drwidth = 1, hwwidth = 1, wuwidth = 1;
+	static int devno_width = 1, dawidth = 1, drwidth = 1, hwwidth = 1, tpwidth = 1,frwidth = 1,wuwidth = 1;
 	char logline[256], unique_id[12];
 	struct timeval now;
 	double dev_runtime, wu;
@@ -2680,6 +2684,11 @@ static void curses_print_devstatus(struct cgpu_info *cgpu, int devno, int count)
 		adj_width(wu, &wuwidth);
 		cg_wprintw(statuswin, "%6s / %6sh/s WU:%*.1f/m", displayed_rolling,
 			   displayed_hashes, wuwidth + 2, wu);
+		if(cgpu->temp_have)
+			{
+		adj_fwidth(cgpu->temp, &tpwidth);
+		cg_wprintw(statuswin, "| T:%*.0fC", tpwidth ,cgpu->temp);
+			}
 	} else {
 		adj_fwidth(cgpu->diff_accepted, &dawidth);
 		adj_fwidth(cgpu->diff_rejected, &drwidth);
@@ -5793,7 +5802,11 @@ static void hashmeter(int thr_id, uint64_t hashes_done)
 	decay_time(&rolling1, hashes_done, tv_tdiff, 60.0);
 	decay_time(&rolling5, hashes_done, tv_tdiff, 300.0);
 	decay_time(&rolling15, hashes_done, tv_tdiff, 900.0);
+#ifdef WIN32
+	global_hashrate = ((unsigned long long)lround(total_rolling)) * 1000000;
+#else
 	global_hashrate = llround(total_rolling) * 1000000;
+#endif
 	total_secs = tdiff(&total_tv_end, &total_tv_start);
 	if (showlog) {
 		char displayed_hashes[16], displayed_rolling[16];
@@ -8900,6 +8913,25 @@ static void adjust_mostdevs(void)
 {
 	if (total_devices - zombie_devs > most_devices)
 		most_devices = total_devices - zombie_devs;
+}
+
+/*
+*author: Rockminer 2014.05.09
+*/
+bool icarus_get_device_id(struct cgpu_info *cgpu)
+{
+	static struct _cgpu_devid_counter *devids = NULL;
+	struct _cgpu_devid_counter *d;
+
+	HASH_FIND_STR(devids, cgpu->drv->name, d);
+	if (d)
+	{
+		return (d->lastid + 1);
+	}
+	else 
+	{
+		return 0;
+	}
 }
 
 bool add_cgpu(struct cgpu_info *cgpu)
